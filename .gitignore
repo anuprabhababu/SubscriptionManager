@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Build artifacts
+dist/
+build/
+coverage/
+.vite/
+/work/
+
+# Local environment files (keep templates trackable)
+.env
+.env.*
+!.env.example
+
+# Local SQLite databases and journals
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+
+# Logs
+*.log
