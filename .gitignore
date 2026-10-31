@@ -22,3 +22,6 @@ coverage/
 
 # Logs
 *.log
+
+# Local database backup files
+*.bak

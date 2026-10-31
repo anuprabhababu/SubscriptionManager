@@ -3,131 +3,33 @@ import { randomUUID } from 'node:crypto';
 import { prisma } from '../config/prisma.js';
 import { createInvoiceForSubscription, recordPayment, runRecurringBilling } from '../services/billingService.js';
 import { roundMoney } from '../services/pricingService.js';
-
-const dateOnly = value => new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate()));
-const createSchema = z.object({ customerId: z.string().min(1), planId: z.string().min(1), startDate: z.coerce.date().optional(), expiryDate: z.preprocess(v => !v ? undefined : v, z.coerce.date().optional()), quantity: z.coerce.number().int().min(1).max(100000).default(1), taxRate: z.coerce.number().min(0).max(100).default(0) });
-const paymentSchema = z.object({ amount: z.coerce.number().finite().positive(), method: z.enum(['Cash', 'Bank transfer', 'Card', 'Other']), reference: z.string().trim().max(120).optional() });
-
-export async function createSubscription(req, res) {
-  const parsed = createSchema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid subscription details' });
-  const input = parsed.data;
-  const customer = await prisma.customer.findUnique({ where: { id: input.customerId } });
-  if (!customer) return res.status(404).json({ error: 'Customer not found' });
-  const plan = await prisma.plan.findUnique({ where: { id: input.planId } });
-  if (!plan) return res.status(404).json({ error: 'Plan not found' });
-  const startDate = dateOnly(input.startDate || new Date());
-  const expiryDate = input.expiryDate ? dateOnly(input.expiryDate) : null;
-  if (input.quantity < plan.minimumQuantity) return res.status(400).json({ error: `This plan requires at least ${plan.minimumQuantity} units` });
-  if (expiryDate && expiryDate <= startDate) return res.status(400).json({ error: 'Expiry date must be after the start date' });
-  if (plan.availableFrom && startDate < dateOnly(plan.availableFrom)) return res.status(400).json({ error: 'This plan is not available yet' });
-  if (plan.availableUntil && startDate > dateOnly(plan.availableUntil)) return res.status(400).json({ error: 'This plan is no longer available' });
-  const subscription = await prisma.$transaction(async tx => {
-    const created = await tx.subscription.create({ data: {
-      customerId: customer.id, planId: plan.id,
-      subscriptionNumber: `SUB-${Date.now()}-${randomUUID().slice(0, 6).toUpperCase()}`,
-      startDate, expiryDate, nextBillingDate: startDate, status: 'ACTIVE', quantity: input.quantity, unitPrice: plan.price, billingInterval: plan.billingInterval,
-      taxRate: input.taxRate, billingAnchorDay: startDate.getUTCDate(),
-    } });
-    const { periodEnd } = await createInvoiceForSubscription(tx, created, startDate);
-    await tx.subscription.update({ where: { id: created.id }, data: { nextBillingDate: expiryDate && expiryDate < periodEnd ? expiryDate : periodEnd } });
-    return tx.subscription.findUnique({ where: { id: created.id }, include: { customer: true, plan: true, invoices: { include: { lines: true } } } });
-  });
-  res.status(201).json(subscription);
+const dateOnly=d=>new Date(Date.UTC(d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate()));
+const createSchema=z.object({customerId:z.string().min(1),planId:z.string().min(1),startDate:z.coerce.date().optional(),expiryDate:z.preprocess(v=>!v?undefined:v,z.coerce.date().optional()),quantity:z.coerce.number().int().min(1).max(100000).default(1),taxRate:z.coerce.number().min(0).max(100).default(0)});
+const paymentSchema=z.object({amount:z.coerce.number().finite().positive(),method:z.enum(['Cash','Bank transfer','Card','Other']),reference:z.string().trim().max(120).optional()});
+const scopeForUser=user=>user.role==='CUSTOMER'?{subscription:{customer:{userId:user.sub}}}:{};
+export async function createSubscription(req,res){const p=createSchema.safeParse(req.body);if(!p.success)return res.status(400).json({error:p.error.issues[0]?.message||'Invalid subscription details'});const i=p.data;const customer=await prisma.customer.findUnique({where:{id:i.customerId}});if(!customer)return res.status(404).json({error:'Customer not found'});const plan=await prisma.plan.findUnique({where:{id:i.planId}});if(!plan)return res.status(404).json({error:'Plan not found'});const start=dateOnly(i.startDate||new Date()),expiry=i.expiryDate?dateOnly(i.expiryDate):null;if(i.quantity<plan.minimumQuantity)return res.status(400).json({error:`This plan requires at least ${plan.minimumQuantity} units`});if(expiry&&expiry<=start)return res.status(400).json({error:'Expiry date must be after the start date'});if(plan.availableFrom&&start<dateOnly(plan.availableFrom))return res.status(400).json({error:'This plan is not available yet'});if(plan.availableUntil&&start>dateOnly(plan.availableUntil))return res.status(400).json({error:'This plan is no longer available'});const sub=await prisma.$transaction(async tx=>{const created=await tx.subscription.create({data:{customerId:customer.id,planId:plan.id,subscriptionNumber:`SUB-${Date.now()}-${randomUUID().slice(0,6).toUpperCase()}`,startDate:start,expiryDate:expiry,nextBillingDate:start,status:'ACTIVE',quantity:i.quantity,unitPrice:plan.price,billingInterval:plan.billingInterval,taxRate:i.taxRate,billingAnchorDay:start.getUTCDate()}});const {periodEnd}=await createInvoiceForSubscription(tx,created,start);await tx.subscription.update({where:{id:created.id},data:{nextBillingDate:expiry&&expiry<periodEnd?expiry:periodEnd}});return tx.subscription.findUnique({where:{id:created.id},include:{customer:true,plan:true,invoices:{include:{lines:true,discountApplications:true}}}})});res.status(201).json(sub);}
+export async function updateSubscriptionStatus(req,res){const p=z.object({status:z.enum(['ACTIVE','PAUSED','CANCELLED'])}).safeParse(req.body);if(!p.success)return res.status(400).json({error:'Status must be ACTIVE, PAUSED, or CANCELLED'});const old=await prisma.subscription.findUnique({where:{id:req.params.id}});if(!old)return res.status(404).json({error:'Subscription not found'});const data={status:p.data.status};if(data.status==='CANCELLED')data.nextBillingDate=null;if(data.status==='ACTIVE'&&old.status==='PAUSED'&&old.nextBillingDate<new Date())data.nextBillingDate=new Date();res.json(await prisma.subscription.update({where:{id:old.id},data,include:{customer:true,plan:true}}));}
+const dateFilter=(q)=>{const where={};if(q.from||q.to){where.issueDate={};if(q.from){const d=new Date(q.from);if(Number.isNaN(+d))throw Error('Invalid from date');where.issueDate.gte=d;}if(q.to){const d=new Date(q.to);if(Number.isNaN(+d))throw Error('Invalid to date');d.setHours(23,59,59,999);where.issueDate.lte=d;}}if(q.status&&['DRAFT','CONFIRMED','PARTIAL','PAID','OVERDUE','CANCELLED'].includes(q.status))where.status=q.status;return where;};
+export async function listInvoices(req,res){const base=scopeForUser(req.user);await prisma.invoice.updateMany({where:{...base,status:{in:['CONFIRMED','PARTIAL']},dueDate:{lt:new Date()}},data:{status:'OVERDUE'}});let filter;try{filter=dateFilter(req.query);}catch{return res.status(400).json({error:'Invalid invoice date filter'});}if(req.query.status&&!['DRAFT','CONFIRMED','PARTIAL','PAID','OVERDUE','CANCELLED'].includes(req.query.status))return res.status(400).json({error:'Invalid invoice status'});const requestedPage=req.query.page===undefined?1:Number(req.query.page),requestedSize=req.query.pageSize===undefined?50:Number(req.query.pageSize);if(!Number.isInteger(requestedPage)||requestedPage<1||!Number.isInteger(requestedSize)||requestedSize<1||requestedSize>100)return res.status(400).json({error:'Page must be positive and page size must be between 1 and 100'});const where={...base,...filter};const page=requestedPage,pageSize=requestedSize;const [items,total]=await Promise.all([prisma.invoice.findMany({where,include:{subscription:{include:{customer:{include:{user:{select:{email:true}}}},plan:true}},lines:true,payments:true,discountApplications:true},orderBy:{issueDate:'desc'},skip:(page-1)*pageSize,take:pageSize}),prisma.invoice.count({where})]);res.json({items,total,page,pageSize});}
+export async function getInvoice(req,res){const invoice=await prisma.invoice.findFirst({where:{id:req.params.id,...scopeForUser(req.user)},include:{subscription:{include:{customer:{include:{user:{select:{email:true}}}},plan:true}},lines:true,payments:{orderBy:{paidAt:'desc'}},discountApplications:true}});if(!invoice)return res.status(404).json({error:'Invoice not found'});res.json(invoice);}
+export async function addPayment(req,res){const p=paymentSchema.safeParse(req.body);if(!p.success)return res.status(400).json({error:p.error.issues[0]?.message||'Invalid payment details'});const inv=await prisma.invoice.findFirst({where:{id:req.params.id,...scopeForUser(req.user)}});if(!inv)return res.status(404).json({error:'Invoice not found'});try{res.status(201).json(await recordPayment({...p.data,invoiceId:inv.id,recordedBy:req.user.sub}));}catch(e){res.status(e.status||400).json({error:e.message});}}
+export async function confirmInvoice(req,res){const result=await prisma.invoice.updateMany({where:{id:req.params.id,status:'DRAFT'},data:{status:'CONFIRMED'}});if(!result.count){const exists=await prisma.invoice.findUnique({where:{id:req.params.id},select:{id:true}});return res.status(exists?409:404).json({error:exists?'Only draft invoices can be confirmed':'Invoice not found'});}res.json(await prisma.invoice.findUnique({where:{id:req.params.id}}));}
+export async function cancelInvoice(req,res){const result=await prisma.invoice.updateMany({where:{id:req.params.id,status:{in:['DRAFT','CONFIRMED']},amountPaid:0},data:{status:'CANCELLED'}});if(!result.count){const exists=await prisma.invoice.findUnique({where:{id:req.params.id},select:{id:true}});return res.status(exists?409:404).json({error:exists?'Only unpaid draft or confirmed invoices can be cancelled':'Invoice not found'});}res.json({ok:true});}
+export async function sendInvoice(req,res){const inv=await prisma.invoice.findUnique({where:{id:req.params.id},include:{subscription:{include:{customer:{include:{user:true}}}}}});if(!inv)return res.status(404).json({error:'Invoice not found'});if(['CANCELLED','DRAFT'].includes(inv.status))return res.status(409).json({error:'Confirm the invoice before sending'});await prisma.invoice.update({where:{id:inv.id},data:{sentAt:new Date()}});const email=inv.subscription.customer.user?.email||'';res.json({sent:true,email,subject:`Invoice ${inv.invoiceNumber}`,body:`Invoice ${inv.invoiceNumber}\nAmount due: ${Math.max(0,inv.total-inv.amountPaid).toFixed(2)}\nDue date: ${inv.dueDate.toISOString().slice(0,10)}\nPlease see the Subscriptly invoice portal for details.`});}
+export async function listPayments(req,res){const where=req.user.role==='CUSTOMER'?{invoice:scopeForUser(req.user)}:{};res.json(await prisma.payment.findMany({where,include:{invoice:{include:{subscription:{include:{customer:true,plan:true}}}}},orderBy:{paidAt:'desc'},take:500}));}
+export async function billingRun(req,res){res.json(await runRecurringBilling());}
+export async function dashboard(req,res){
+ const isCustomer=req.user.role==='CUSTOMER';const cust=isCustomer?{customer:{userId:req.user.sub}}:{};const invScope=isCustomer?{subscription:{customer:{userId:req.user.sub}}}:{};
+ const from=req.query.from?new Date(req.query.from):null,to=req.query.to?new Date(req.query.to):null;if((from&&Number.isNaN(+from))||(to&&Number.isNaN(+to)))return res.status(400).json({error:'Invalid date filter'});if(to)to.setHours(23,59,59,999);
+ const allowed=['DRAFT','CONFIRMED','PARTIAL','PAID','OVERDUE','CANCELLED'];if(req.query.status&&!allowed.includes(req.query.status))return res.status(400).json({error:'Invalid invoice status filter'});
+ const dateWhere=from||to?{issueDate:{...(from?{gte:from}:{}),...(to?{lte:to}:{})}}:{};const invoiceWhere={...invScope,...dateWhere,...(req.query.status?{status:req.query.status}:{})};const balanceWhere={...invScope,...dateWhere,...(req.query.status==='CANCELLED'?{id:'__no_invoice__'}:req.query.status?{status:req.query.status}:{status:{not:'CANCELLED'}})};
+ await prisma.invoice.updateMany({where:{...invScope,status:{in:['CONFIRMED','PARTIAL']},dueDate:{lt:new Date()}},data:{status:'OVERDUE'}});
+ const payWhere={...(from||to?{paidAt:{...(from?{gte:from}:{}),...(to?{lte:to}:{})}}:{}),invoice:{...invScope,...dateWhere,...(req.query.status?{status:req.query.status}:{})}};
+ const monthlyPromise=isCustomer?prisma.$queryRaw`SELECT COALESCE(SUM(s.unitPrice*s.quantity*CASE COALESCE(s.billingInterval,p.billingInterval) WHEN 'Monthly' THEN 1.0 WHEN 'Quarterly' THEN 1.0/3.0 WHEN 'Yearly' THEN 1.0/12.0 ELSE 0 END),0) AS value FROM Subscription s JOIN Plan p ON p.id=s.planId WHERE s.status='ACTIVE' AND s.customerId IN (SELECT id FROM Customer WHERE userId=${req.user.sub})`:prisma.$queryRaw`SELECT COALESCE(SUM(s.unitPrice*s.quantity*CASE COALESCE(s.billingInterval,p.billingInterval) WHEN 'Monthly' THEN 1.0 WHEN 'Quarterly' THEN 1.0/3.0 WHEN 'Yearly' THEN 1.0/12.0 ELSE 0 END),0) AS value FROM Subscription s JOIN Plan p ON p.id=s.planId WHERE s.status='ACTIVE'`;
+ const arrPromise=isCustomer?prisma.$queryRaw`SELECT COALESCE(SUM(s.unitPrice*s.quantity*CASE COALESCE(s.billingInterval,p.billingInterval) WHEN 'Monthly' THEN 12.0 WHEN 'Quarterly' THEN 4.0 WHEN 'Yearly' THEN 1.0 ELSE 0 END),0) AS value FROM Subscription s JOIN Plan p ON p.id=s.planId WHERE s.status='ACTIVE' AND s.customerId IN (SELECT id FROM Customer WHERE userId=${req.user.sub})`:prisma.$queryRaw`SELECT COALESCE(SUM(s.unitPrice*s.quantity*CASE COALESCE(s.billingInterval,p.billingInterval) WHEN 'Monthly' THEN 12.0 WHEN 'Quarterly' THEN 4.0 WHEN 'Yearly' THEN 1.0 ELSE 0 END),0) AS value FROM Subscription s JOIN Plan p ON p.id=s.planId WHERE s.status='ACTIVE'`;
+ const [customers,products,plans,subscriptions,activeSubscriptions,invoiceAgg,balanceAgg,overdueInvoices,payments,monthly,arr]=await Promise.all([prisma.customer.count(isCustomer?{where:{userId:req.user.sub}}:{}),prisma.product.count(),prisma.plan.count(),prisma.subscription.count({where:cust}),prisma.subscription.count({where:{...cust,status:'ACTIVE'}}),prisma.invoice.aggregate({where:invoiceWhere,_count:{_all:true}}),prisma.invoice.aggregate({where:balanceWhere,_sum:{total:true,amountPaid:true}}),prisma.invoice.count({where:{...invoiceWhere,status:'OVERDUE'}}),prisma.payment.aggregate({where:payWhere,_sum:{amount:true}}),monthlyPromise,arrPromise]);
+ res.json({customers,products,plans,subscriptions,activeSubscriptions,invoices:invoiceAgg._count._all,overdueInvoices,outstanding:roundMoney(Math.max(0,(balanceAgg._sum.total||0)-(balanceAgg._sum.amountPaid||0))),collected:roundMoney(payments._sum.amount||0),monthlyRecurringRevenue:roundMoney(Number(monthly?.[0]?.value||0)),annualRecurringRevenue:roundMoney(Number(arr?.[0]?.value||0))});
 }
-
-export async function updateSubscriptionStatus(req, res) {
-  const parsed = z.object({ status: z.enum(['ACTIVE', 'PAUSED', 'CANCELLED']) }).safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: 'Status must be ACTIVE, PAUSED, or CANCELLED' });
-  const existing = await prisma.subscription.findUnique({ where: { id: req.params.id } });
-  if (!existing) return res.status(404).json({ error: 'Subscription not found' });
-  const data = { status: parsed.data.status };
-  if (data.status === 'CANCELLED') data.nextBillingDate = null;
-  if (data.status === 'ACTIVE' && existing.status === 'PAUSED' && existing.nextBillingDate < new Date()) data.nextBillingDate = new Date();
-  const updated = await prisma.subscription.update({ where: { id: existing.id }, data, include: { customer: true, plan: true } });
-  res.json(updated);
-}
-
-export async function listInvoices(req, res) {
-  const customerScope = req.user.role === 'CUSTOMER' ? { subscription: { customer: { userId: req.user.sub } } } : {};
-  await prisma.invoice.updateMany({ where: { ...customerScope, status: { in: ['OPEN', 'PARTIAL'] }, dueDate: { lt: new Date() } }, data: { status: 'OVERDUE' } });
-  res.json(await prisma.invoice.findMany({ where: customerScope, include: { subscription: { include: { customer: true, plan: true } }, lines: true, payments: true }, orderBy: { issueDate: 'desc' } }));
-}
-
-export async function getInvoice(req, res) {
-  const where = req.user.role === 'CUSTOMER' ? { id: req.params.id, subscription: { customer: { userId: req.user.sub } } } : { id: req.params.id };
-  const invoice = await prisma.invoice.findFirst({ where, include: { subscription: { include: { customer: true, plan: true } }, lines: true, payments: { orderBy: { paidAt: 'desc' } } } });
-  if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
-  res.json(invoice);
-}
-
-export async function addPayment(req, res) {
-  const parsed = paymentSchema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Invalid payment details' });
-  const invoice = await prisma.invoice.findFirst({ where: { id: req.params.id, ...(req.user.role === 'CUSTOMER' ? { subscription: { customer: { userId: req.user.sub } } } : {}) } });
-  if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
-  try {
-    const payment = await recordPayment({ ...parsed.data, invoiceId: invoice.id, recordedBy: req.user.sub });
-    res.status(201).json(payment);
-  } catch (error) {
-    res.status(error.status || 400).json({ error: error.message });
-  }
-}
-
-export async function listPayments(req, res) {
-  const where = req.user.role === 'CUSTOMER' ? { invoice: { subscription: { customer: { userId: req.user.sub } } } } : {};
-  res.json(await prisma.payment.findMany({ where, include: { invoice: { include: { subscription: { include: { customer: true, plan: true } } } } }, orderBy: { paidAt: 'desc' } }));
-}
-
-export async function billingRun(req, res) {
-  res.json(await runRecurringBilling());
-}
-
-export async function dashboard(req, res) {
-  const customerScope = req.user.role === 'CUSTOMER' ? { subscription: { customer: { userId: req.user.sub } } } : {};
-  const subscriptionScope = req.user.role === 'CUSTOMER' ? { customer: { userId: req.user.sub } } : {};
-  await prisma.invoice.updateMany({ where: { ...customerScope, status: { in: ['OPEN', 'PARTIAL'] }, dueDate: { lt: new Date() } }, data: { status: 'OVERDUE' } });
-  const [customers, products, plans, activeSubscriptions, invoices, payments, activePlans] = await Promise.all([
-    req.user.role === 'CUSTOMER' ? prisma.customer.count({ where: { userId: req.user.sub } }) : prisma.customer.count(),
-    prisma.product.count(), prisma.plan.count(),
-    prisma.subscription.count({ where: { ...subscriptionScope, status: 'ACTIVE' } }),
-    prisma.invoice.findMany({ where: { ...customerScope, status: { not: 'VOID' } }, select: { total: true, amountPaid: true, status: true } }),
-    prisma.payment.aggregate({ where: req.user.role === 'CUSTOMER' ? { invoice: customerScope } : {}, _sum: { amount: true } }),
-    prisma.subscription.findMany({ where: { ...subscriptionScope, status: 'ACTIVE' }, include: { plan: true } }),
-  ]);
-  const monthlyFactor = { Monthly: 1, Quarterly: 1 / 3, Yearly: 1 / 12 };
-  res.json({
-    customers, products, plans, activeSubscriptions,
-    subscriptions: await prisma.subscription.count({ where: subscriptionScope }),
-    invoices: invoices.length,
-    overdueInvoices: invoices.filter(invoice => invoice.status === 'OVERDUE').length,
-    outstanding: roundMoney(invoices.reduce((sum, invoice) => sum + invoice.total - invoice.amountPaid, 0)),
-    collected: roundMoney(payments._sum.amount || 0),
-    monthlyRecurringRevenue: roundMoney(activePlans.reduce((sum, item) => sum + item.unitPrice * item.quantity * (monthlyFactor[item.billingInterval] || 0), 0)),
-  });
-}
-
-export async function portal(req, res) {
-  if (req.user.role !== 'CUSTOMER') return res.status(403).json({ error: 'Customer portal is for customer accounts' });
-  const invoiceScope = { subscription: { customer: { userId: req.user.sub } } };
-  await prisma.invoice.updateMany({ where: { ...invoiceScope, status: { in: ['OPEN', 'PARTIAL'] }, dueDate: { lt: new Date() } }, data: { status: 'OVERDUE' } });
-  const [customer, subscriptions, invoices, totals] = await Promise.all([
-    prisma.customer.findUnique({ where: { userId: req.user.sub } }),
-    prisma.subscription.findMany({ where: { customer: { userId: req.user.sub } }, include: { plan: true, invoices: { orderBy: { issueDate: 'desc' }, take: 5 } }, orderBy: { createdAt: 'desc' } }),
-    prisma.invoice.findMany({ where: invoiceScope, include: { subscription: { include: { plan: true } }, lines: true, payments: true }, orderBy: { issueDate: 'desc' }, take: 10 }),
-    prisma.invoice.aggregate({ where: { ...invoiceScope, status: { not: 'VOID' } }, _sum: { total: true, amountPaid: true } }),
-  ]);
-  res.json({ customer, subscriptions, invoices, outstanding: roundMoney((totals._sum.total || 0) - (totals._sum.amountPaid || 0)) });
-}
-
-export async function subscriptionList(req, res) {
-  const where = req.user.role === 'CUSTOMER' ? { customer: { userId: req.user.sub } } : {};
-  res.json(await prisma.subscription.findMany({ where, include: { customer: true, plan: true, lines: { include: { product: true, variant: true } }, invoices: { orderBy: { issueDate: 'desc' } } }, orderBy: { createdAt: 'desc' } }));
-}
-
-export async function subscriptionDetail(req, res) {
-  const where = req.user.role === 'CUSTOMER' ? { id: req.params.id, customer: { userId: req.user.sub } } : { id: req.params.id };
-  const item = await prisma.subscription.findFirst({ where, include: { customer: true, plan: true, lines: { include: { product: true, variant: true } }, invoices: { include: { lines: true, payments: true }, orderBy: { issueDate: 'desc' } } } });
-  if (!item) return res.status(404).json({ error: 'Subscription not found' });
-  res.json(item);
-}
+export async function portal(req,res){if(req.user.role!=='CUSTOMER')return res.status(403).json({error:'Customer portal is for customer accounts'});const invoiceScope={subscription:{customer:{userId:req.user.sub}}};await prisma.invoice.updateMany({where:{...invoiceScope,status:{in:['CONFIRMED','PARTIAL']},dueDate:{lt:new Date()}},data:{status:'OVERDUE'}});const [customer,subscriptions,invoices,totals]=await Promise.all([prisma.customer.findUnique({where:{userId:req.user.sub}}),prisma.subscription.findMany({where:{customer:{userId:req.user.sub}},include:{plan:true,invoices:{orderBy:{issueDate:'desc'},take:5}},orderBy:{createdAt:'desc'},take:200}),prisma.invoice.findMany({where:invoiceScope,include:{subscription:{include:{plan:true}},lines:true,payments:true,discountApplications:true},orderBy:{issueDate:'desc'},take:50}),prisma.invoice.aggregate({where:{...invoiceScope,status:{not:'CANCELLED'}},_sum:{total:true,amountPaid:true}})]);res.json({customer,subscriptions,invoices,outstanding:roundMoney((totals._sum.total||0)-(totals._sum.amountPaid||0))});}
+export async function subscriptionList(req,res){const where=req.user.role==='CUSTOMER'?{customer:{userId:req.user.sub}}:{};res.json(await prisma.subscription.findMany({where,include:{customer:true,plan:true,lines:{include:{product:true,variant:true}},invoices:{orderBy:{issueDate:'desc'},take:20}},orderBy:{createdAt:'desc'},take:500}));}
+export async function subscriptionDetail(req,res){const where=req.user.role==='CUSTOMER'?{id:req.params.id,customer:{userId:req.user.sub}}:{id:req.params.id};const item=await prisma.subscription.findFirst({where,include:{customer:true,plan:true,lines:{include:{product:true,variant:true}},invoices:{include:{lines:true,payments:true,discountApplications:true},orderBy:{issueDate:'desc'},take:100}}});if(!item)return res.status(404).json({error:'Subscription not found'});res.json(item);}
