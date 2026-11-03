@@ -15,6 +15,23 @@ Phase 2 demo flow: create a customer and plan, create a subscription (which imme
 
 Client and server also run independently with `npm run dev --prefix client` and `npm run dev --prefix server`.
 
+## Free hosted demo (Railway)
+
+The repository includes a `railway.toml` for a single Railway service that builds the React app and serves it from Express. This keeps browser API requests same-origin and preserves the existing SQLite setup.
+
+1. Connect the GitHub repository's `main` branch to a Railway service, using the repository root as the service root.
+2. Add a Railway volume mounted at `/data` before the first deploy.
+3. Set these service variables in Railway (do not commit their values):
+   - `DATABASE_URL=file:/data/subscriptly.db`
+   - `JWT_SECRET` to a random secret of at least 32 characters
+   - `NODE_ENV=production`
+   - `ADMIN_EMAIL` to the administrator email
+   - `ADMIN_PASSWORD` to a unique password of at least 9 characters with lowercase, uppercase, and a special character
+   - Optionally set `ADMIN_NAME`
+4. Generate a public domain for the service and deploy. Railway runs the Prisma migrations and creates the administrator from the environment variables before starting the app. The local demo seed password is never used by this production seed.
+
+The Free plan currently includes $1/month in usage credit and a 0.5 GB volume. Monitor Railway usage; when the credit is exhausted, Railway stops workloads. Limits and plan terms can change. The database remains on the attached volume across deployments while the service and volume remain available. See [Railway plan details](https://docs.railway.com/pricing/plans) and [volume documentation](https://docs.railway.com/volumes/reference).
+
 Customer accounts have a read-only portal scoped to their own subscriptions, invoices, and payments. Invoice payment entry is staff/admin only; this phase records payments and does not connect a payment gateway.
 
 ## Quotation workflow
