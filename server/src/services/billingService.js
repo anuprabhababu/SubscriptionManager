@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { prisma } from '../config/prisma.js';
+import { prisma, transactionOptions } from '../config/prisma.js';
 import { priceInvoice, roundMoney } from './pricingService.js';
 
 const intervalMonths = { Monthly: 1, Quarterly: 3, Yearly: 12 };
@@ -119,7 +119,7 @@ export async function runRecurringBilling(now = new Date()) {
         const next = current.expiryDate && current.expiryDate < periodEnd ? current.expiryDate : periodEnd;
         await tx.subscription.update({ where: { id }, data: { nextBillingDate: next } });
         return true;
-      });
+      }, transactionOptions);
       if (didGenerate) generated += 1;
     } catch (error) {
       if (error.code !== 'P2002') throw error;
@@ -149,5 +149,5 @@ export async function recordPayment({ invoiceId, amount, method, reference, reco
     const overdue = invoice.dueDate < new Date();
     await tx.invoice.update({ where: { id: invoiceId }, data: { amountPaid, status: fullyPaid ? 'PAID' : overdue ? 'OVERDUE' : 'PARTIAL' } });
     return payment;
-  });
+  }, transactionOptions);
 }

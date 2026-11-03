@@ -6,6 +6,7 @@ dist/
 build/
 coverage/
 .vite/
+.vercel/
 /work/
 
 # Local environment files (keep templates trackable)

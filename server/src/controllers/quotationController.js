@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { prisma } from '../config/prisma.js';
+import { prisma, transactionOptions } from '../config/prisma.js';
 import { createInvoiceForSubscription } from '../services/billingService.js';
 import { roundMoney } from '../services/pricingService.js';
 
@@ -143,7 +143,7 @@ export async function createQuotation(req, res) {
         paymentTerms: input.paymentTerms, taxRate: input.taxRate, ...amount,
         lines: { create: lines },
       }, include: includeQuotation });
-    });
+    }, transactionOptions);
     res.status(201).json(quotation);
   } catch (error) { toError(res, error, 'Could not create quotation'); }
 }
@@ -171,7 +171,7 @@ export async function updateQuotation(req, res) {
         lines: { deleteMany: {}, create: lines },
       } });
       return tx.quotation.findUnique({ where: { id: current.id }, include: includeQuotation });
-    });
+    }, transactionOptions);
     res.json(quotation);
   } catch (error) { toError(res, error, 'Could not update quotation'); }
 }
@@ -225,7 +225,7 @@ export async function convertQuotation(req, res) {
       });
       if (attached.count !== 1) throw Object.assign(new Error('This quotation was converted by another request'), { status: 409 });
       return { subscription: await tx.subscription.findUnique({ where: { id: created.id }, include: { customer: true, plan: true, lines: { include: { product: true, variant: true } }, invoices: { include: { lines: true } } } }), invoice };
-    });
+    }, transactionOptions);
     res.status(201).json(result);
   } catch (error) { toError(res, error, 'Could not convert quotation'); }
 }
@@ -247,7 +247,7 @@ export async function createQuotationTemplate(req, res) {
         planQuantity: input.planQuantity, planUnitPrice, taxRate: input.taxRate, paymentTerms: input.paymentTerms,
         lines: { create: lines.map(({ productId, variantId, description, quantity, unitPrice }) => ({ productId, variantId, description, quantity, unitPrice })) },
       }, include: includeTemplate });
-    });
+    }, transactionOptions);
     res.status(201).json(template);
   } catch (error) { toError(res, error, 'Could not create quotation template'); }
 }
@@ -268,7 +268,7 @@ export async function updateQuotationTemplate(req, res) {
         lines: { deleteMany: {}, create: lines.map(({ productId, variantId, description, quantity, unitPrice }) => ({ productId, variantId, description, quantity, unitPrice })) },
       } });
       return tx.quotationTemplate.findUnique({ where: { id: current.id }, include: includeTemplate });
-    });
+    }, transactionOptions);
     res.json(template);
   } catch (error) { toError(res, error, 'Could not update quotation template'); }
 }

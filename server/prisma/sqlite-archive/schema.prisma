@@ -1,0 +1,379 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  STAFF
+  CUSTOMER
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAUSED
+  CANCELLED
+  EXPIRED
+}
+
+enum InvoiceStatus {
+  DRAFT
+  CONFIRMED
+  PARTIAL
+  PAID
+  OVERDUE
+  CANCELLED
+}
+
+enum DiscountType {
+  FIXED
+  PERCENTAGE
+}
+
+enum DiscountScope {
+  SUBSCRIPTION
+  PRODUCT
+}
+
+enum TaxScope {
+  ALL
+  PRODUCT
+}
+
+enum QuotationStatus {
+  DRAFT
+  QUOTATION
+  CONFIRMED
+  REJECTED
+  EXPIRED
+}
+
+model User {
+  id        String    @id @default(cuid())
+  name      String
+  email     String    @unique
+  password  String
+  role      Role      @default(CUSTOMER)
+  customer  Customer?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([role])
+}
+
+model Customer {
+  id            String         @id @default(cuid())
+  userId        String?        @unique
+  user          User?          @relation(fields: [userId], references: [id], onDelete: SetNull)
+  companyName   String
+  phone         String?
+  address       String?
+  subscriptions Subscription[]
+  quotations    Quotation[]
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  @@index([companyName])
+}
+
+model Product {
+  id                     String                  @id @default(cuid())
+  name                   String
+  type                   String
+  salesPrice             Float
+  costPrice              Float                   @default(0)
+  notes                  String?
+  variants               ProductVariant[]
+  subscriptionLines      SubscriptionLine[]
+  quotationLines         QuotationLine[]
+  quotationTemplateLines QuotationTemplateLine[]
+  discountRules          DiscountRule[]
+  taxRules               TaxRule[]
+  invoiceLines           InvoiceLine[]
+  plans                  Plan[]
+  createdAt              DateTime                @default(now())
+  updatedAt              DateTime                @updatedAt
+
+  @@index([name])
+}
+
+model ProductVariant {
+  id                     String                  @id @default(cuid())
+  productId              String
+  product                Product                 @relation(fields: [productId], references: [id], onDelete: Cascade)
+  attribute              String
+  value                  String
+  additionalPrice        Float                   @default(0)
+  subscriptionLines      SubscriptionLine[]
+  quotationLines         QuotationLine[]
+  quotationTemplateLines QuotationTemplateLine[]
+  createdAt              DateTime                @default(now())
+
+  @@unique([productId, attribute, value])
+  @@index([productId])
+}
+
+model Plan {
+  id                 String              @id @default(cuid())
+  productId          String?
+  product            Product?            @relation(fields: [productId], references: [id], onDelete: SetNull)
+  name               String
+  price              Float
+  billingInterval    String
+  minimumQuantity    Int                 @default(1)
+  availableFrom      DateTime?
+  availableUntil     DateTime?
+  autoClose          Boolean             @default(false)
+  lifecycleSettings  String?
+  subscriptions      Subscription[]
+  quotations         Quotation[]
+  quotationTemplates QuotationTemplate[]
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  @@index([name])
+  @@index([productId])
+}
+
+model Subscription {
+  id                 String             @id @default(cuid())
+  customerId         String
+  customer           Customer           @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  planId             String
+  plan               Plan               @relation(fields: [planId], references: [id], onDelete: Restrict)
+  subscriptionNumber String             @unique
+  startDate          DateTime
+  expiryDate         DateTime?
+  nextBillingDate    DateTime?
+  status             SubscriptionStatus @default(ACTIVE)
+  quantity           Int                @default(1)
+  unitPrice          Float              @default(0)
+  billingInterval    String             @default("Monthly")
+  taxRate            Float              @default(0)
+  billingAnchorDay   Int                @default(1)
+  paymentTerms       String?
+  lines              SubscriptionLine[]
+  invoices           Invoice[]
+  convertedQuotation Quotation?         @relation("QuotationConversion")
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  @@index([customerId, status])
+  @@index([planId])
+  @@index([nextBillingDate])
+}
+
+model Invoice {
+  id                   String                @id @default(cuid())
+  subscriptionId       String
+  subscription         Subscription          @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
+  invoiceNumber        String                @unique
+  periodStart          DateTime
+  periodEnd            DateTime
+  issueDate            DateTime              @default(now())
+  dueDate              DateTime
+  status               InvoiceStatus         @default(DRAFT)
+  subtotal             Float
+  taxRate              Float                 @default(0)
+  taxAmount            Float                 @default(0)
+  total                Float
+  amountPaid           Float                 @default(0)
+  discountAmount       Float                 @default(0)
+  sentAt               DateTime?
+  lines                InvoiceLine[]
+  payments             Payment[]
+  discountApplications DiscountApplication[]
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+
+  @@unique([subscriptionId, periodStart])
+  @@index([status, dueDate])
+  @@index([subscriptionId])
+}
+
+model InvoiceLine {
+  id             String   @id @default(cuid())
+  invoiceId      String
+  invoice        Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  description    String
+  productId      String?
+  product        Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+  quantity       Int      @default(1)
+  unitPrice      Float
+  lineTotal      Float
+  discountAmount Float    @default(0)
+  taxRate        Float    @default(0)
+  taxAmount      Float    @default(0)
+
+  @@index([invoiceId])
+}
+
+model Payment {
+  id         String   @id @default(cuid())
+  invoiceId  String
+  invoice    Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  amount     Float
+  method     String
+  reference  String?
+  paidAt     DateTime @default(now())
+  recordedBy String
+  createdAt  DateTime @default(now())
+
+  @@index([invoiceId, paidAt])
+}
+
+model SubscriptionLine {
+  id             String          @id @default(cuid())
+  subscriptionId String
+  subscription   Subscription    @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  productId      String
+  product        Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
+  variantId      String?
+  variant        ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  quantity       Int             @default(1)
+  unitPrice      Float
+
+  @@index([subscriptionId])
+  @@index([productId])
+}
+
+model QuotationTemplate {
+  id            String                  @id @default(cuid())
+  name          String                  @unique
+  description   String?
+  planId        String
+  plan          Plan                    @relation(fields: [planId], references: [id], onDelete: Restrict)
+  planQuantity  Int                     @default(1)
+  planUnitPrice Float?
+  taxRate       Float                   @default(0)
+  paymentTerms  String                  @default("Net 14 days")
+  lines         QuotationTemplateLine[]
+  createdAt     DateTime                @default(now())
+  updatedAt     DateTime                @updatedAt
+
+  @@index([planId])
+}
+
+model QuotationTemplateLine {
+  id          String            @id @default(cuid())
+  templateId  String
+  template    QuotationTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  productId   String
+  product     Product           @relation(fields: [productId], references: [id], onDelete: Restrict)
+  variantId   String?
+  variant     ProductVariant?   @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  description String
+  quantity    Int               @default(1)
+  unitPrice   Float
+  createdAt   DateTime          @default(now())
+
+  @@index([templateId])
+  @@index([productId])
+}
+
+model Quotation {
+  id                      String          @id @default(cuid())
+  quotationNumber         String          @unique
+  customerId              String
+  customer                Customer        @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  planId                  String
+  plan                    Plan            @relation(fields: [planId], references: [id], onDelete: Restrict)
+  status                  QuotationStatus @default(DRAFT)
+  planName                String
+  billingInterval         String
+  planQuantity            Int             @default(1)
+  planUnitPrice           Float
+  startDate               DateTime
+  expiryDate              DateTime?
+  validUntil              DateTime?
+  paymentTerms            String
+  taxRate                 Float           @default(0)
+  subtotal                Float
+  taxAmount               Float
+  total                   Float
+  convertedSubscriptionId String?         @unique
+  convertedSubscription   Subscription?   @relation("QuotationConversion", fields: [convertedSubscriptionId], references: [id], onDelete: Restrict)
+  lines                   QuotationLine[]
+  createdAt               DateTime        @default(now())
+  updatedAt               DateTime        @updatedAt
+
+  @@index([customerId, status])
+  @@index([status, validUntil])
+}
+
+model QuotationLine {
+  id          String          @id @default(cuid())
+  quotationId String
+  quotation   Quotation       @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+  productId   String?
+  product     Product?        @relation(fields: [productId], references: [id], onDelete: SetNull)
+  variantId   String?
+  variant     ProductVariant? @relation(fields: [variantId], references: [id], onDelete: SetNull)
+  description String
+  quantity    Int             @default(1)
+  unitPrice   Float
+  lineTotal   Float
+  createdAt   DateTime        @default(now())
+
+  @@index([quotationId])
+  @@index([productId])
+}
+
+model DiscountRule {
+  id              String                @id @default(cuid())
+  name            String                @unique
+  type            DiscountType
+  scope           DiscountScope         @default(SUBSCRIPTION)
+  productId       String?
+  product         Product?              @relation(fields: [productId], references: [id], onDelete: Restrict)
+  value           Float
+  minimumAmount   Float?
+  minimumQuantity Int?
+  validFrom       DateTime?
+  validUntil      DateTime?
+  usageLimit      Int?
+  usageCount      Int                   @default(0)
+  active          Boolean               @default(true)
+  applications    DiscountApplication[]
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+
+  @@index([active, validFrom, validUntil])
+  @@index([productId, active])
+}
+
+model DiscountApplication {
+  id             String       @id @default(cuid())
+  invoiceId      String
+  invoice        Invoice      @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  discountRuleId String
+  discountRule   DiscountRule @relation(fields: [discountRuleId], references: [id], onDelete: Restrict)
+  ruleName       String
+  amount         Float
+  createdAt      DateTime     @default(now())
+
+  @@unique([invoiceId, discountRuleId])
+  @@index([discountRuleId, createdAt])
+}
+
+model TaxRule {
+  id         String    @id @default(cuid())
+  name       String    @unique
+  scope      TaxScope  @default(ALL)
+  productId  String?
+  product    Product?  @relation(fields: [productId], references: [id], onDelete: Restrict)
+  rate       Float
+  priority   Int       @default(0)
+  validFrom  DateTime?
+  validUntil DateTime?
+  active     Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@index([active, scope, priority])
+  @@index([productId, active])
+}

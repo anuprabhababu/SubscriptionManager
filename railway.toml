@@ -1,7 +1,0 @@
-[build]
-buildCommand = "npm ci --prefix server && npm ci --prefix client && npm run db:generate --prefix server && npm run build --prefix client"
-
-[deploy]
-startCommand = "npm run db:deploy --prefix server && npm run seed:production --prefix server && npm start --prefix server"
-healthcheckPath = "/api/health"
-restartPolicyType = "ON_FAILURE"
